@@ -67,7 +67,7 @@ Tip: for VS Code, set `window.title` to `${activeEditorLong}` so the title carri
 
 ## Privacy and security
 
-- No network access. Nothing leaves your computer.
+- The only network access is the update check: shortly after start and then once a day, it asks GitHub for this repository's latest release (sending only the app name and version) and mentions a newer one in the tray. Nothing is downloaded or installed by itself. Turn off **Check for updates automatically** in the tray menu to stop it. Everything else stays on your computer.
 - Settings and clipboard history live in `%APPDATA%\FileFollow\`. History is stored unencrypted, up to 300 entries (pinned items are kept). Use **Pause clipboard recording** in the tray menu for sensitive work.
 - Clipboard content flagged with `ExcludeClipboardContentFromMonitorProcessing`, `Clipboard Viewer Ignore` or `CanIncludeInClipboardHistory = 0` is never recorded.
 - Network paths (`\\host\share`) found in window titles are ignored, so a web page title cannot make Windows connect to a remote host and leak NTLM credentials.
@@ -81,6 +81,9 @@ Tip: for VS Code, set `window.title` to `${activeEditorLong}` so the title carri
 | `src/ClipHistory.cs` | Clipboard tab |
 | `src/I18n.cs` | Language selection |
 | `src/Theme.cs` | Light and dark colors |
+| `src/Glass.cs` | Frosted glass background |
+| `src/Version.cs` | The version (major.minor.patch, e.g. 1.3.0), shared by the app, the installer and the update check; GitHub release tags are `v` + the version |
+| `src/Update.cs` | Update check |
 | `docs/make-shots.ps1` | Renders the screenshots |
 | `docs/build-guide.ps1` | Builds the illustrated guides |
 

@@ -67,7 +67,7 @@
 
 ## 隱私與安全
 
-- 不連網路，所有資料都留在本機。
+- 唯一的連網是檢查更新：啟動後與之後每天一次，向 GitHub 查詢這個 repo 的最新版本（只送出程式名稱與版本號），有新版時在系統匣提示，不會自動下載或安裝。可以從系統匣選單關閉「自動檢查更新」。其他資料都留在本機。
 - 設定和剪貼簿紀錄存在 `%APPDATA%\FileFollow\`，未加密，最多 300 筆（釘選的保留）。處理機密資料時，可以從系統匣選單「暫停記錄剪貼簿」。
 - 標記 `ExcludeClipboardContentFromMonitorProcessing`、`Clipboard Viewer Ignore` 或 `CanIncludeInClipboardHistory = 0` 的內容不會被記錄。
 - 視窗標題裡的網路路徑（`\\主機\共用`）一律忽略，網頁標題無法誘使 Windows 連到外部主機而外洩 NTLM 憑證。
@@ -81,6 +81,9 @@
 | `src/ClipHistory.cs` | 剪貼簿分頁 |
 | `src/I18n.cs` | 介面語言 |
 | `src/Theme.cs` | 淺色、深色配色 |
+| `src/Glass.cs` | 毛玻璃背景 |
+| `src/Version.cs` | 版本號（主版.次版.修正，例如 1.3.0），程式、安裝檔、檢查更新共用；GitHub 發行版標籤為 `v` + 版本號 |
+| `src/Update.cs` | 檢查更新 |
 | `docs/make-shots.ps1` | 產生截圖 |
 | `docs/build-guide.ps1` | 產生圖解說明頁 |
 

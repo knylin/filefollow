@@ -626,6 +626,7 @@ namespace FileFollow
         {
             if (!TestMode) StartTaskbar(); // before the saved collapsed state is applied
             if (!TestMode) SetGlass(GlassOn);
+            if (!TestMode) StartUpdateChecks();
             base.OnShown(e);
             pollTimer.Start();
             hoverTimer.Start();
@@ -831,6 +832,8 @@ namespace FileFollow
                 Program.RestartRequested = true;
                 Close();
             });
+            menu.Items.Add(new ToolStripSeparator());
+            AddUpdateTrayItems(menu);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(L.T("結束", "Exit"), null, delegate { Close(); });
             tray = new NotifyIcon { Icon = Icon, Text = L.T("跟檔夾", "FileFollow"), Visible = true, ContextMenuStrip = menu };
@@ -1686,6 +1689,7 @@ namespace FileFollow
             if (args.Length == 2 && args[0] == "--probe") { Probe(args[1]); return; }
             if (args.Length == 2 && args[0] == "--taskbar-test") { TaskbarTest(args[1]); return; }
             if (args.Length == 2 && args[0] == "--menu-test") { MenuTest(args[1]); return; }
+            if (args.Length == 2 && args[0] == "--update-test") { UpdateTest(args[1]); return; }
             if (args.Length == 3 && args[0] == "--list-test") { ListTest(args[1], args[2]); return; }
             if (args.Length == 4 && args[0] == "--snapshot") { Snapshot(args[1], args[2], args[3]); return; }
 
@@ -1767,6 +1771,20 @@ namespace FileFollow
         }
 
         // Test hook: screenshots the tray menu with a submenu open
+        // Test hook: asks GitHub for the latest release and writes what the update check would decide
+        static void UpdateTest(string outTxt)
+        {
+            string tag, url, error;
+            MainForm.FetchLatest(out tag, out url, out error);
+            var sb = new StringBuilder();
+            sb.AppendLine("current=" + MainForm.CurrentVersion);
+            sb.AppendLine("tag=" + tag + " url=" + url + " error=" + error);
+            if (tag != null) sb.AppendLine("newer=" + MainForm.Newer(tag, MainForm.CurrentVersion));
+            foreach (string[] c in new[] { new[] { "v1.3.0", "1.3.0" }, new[] { "v1.4.0", "1.3.0" }, new[] { "v1.3.1", "1.3.0" }, new[] { "v1.2.0", "1.3.0" }, new[] { "v1.10.0", "1.9.2" }, new[] { "v2.0.0", "1.12.3" }, new[] { "junk", "1.3.0" } })
+                sb.AppendLine(c[0] + " vs " + c[1] + " -> newer=" + MainForm.Newer(c[0], c[1]));
+            File.WriteAllText(outTxt, sb.ToString(), Encoding.UTF8);
+        }
+
         static void MenuTest(string outPng)
         {
             Native.SetProcessDPIAware();

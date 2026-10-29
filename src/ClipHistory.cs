@@ -171,9 +171,17 @@ namespace FileFollow
             var btnMin = new IconButton("\uE921", fontGlyph, P(28), L.T("收起（Ctrl+Alt+F）", "Collapse (Ctrl+Alt+F)"), tips);
             btnMin.Top = P(8);
             btnMin.Click += delegate { SetCollapsed(true); };
+            // shown only when GitHub has a newer release (Update.cs)
+            btnUpdate = new IconButton("", fontGlyph, P(28), "", tips) { Visible = false, ForeColor = Theme.Notice };
+            btnUpdate.Top = P(8);
+            btnUpdate.Click += delegate { if (newUrl != null) Open(newUrl); };
             tabs.Picked += i => SwitchTab(i);
-            tabBar.Controls.AddRange(new Control[] { tabs, btnMin });
-            tabBar.Resize += delegate { btnMin.Left = tabBar.Width - btnMin.Width - P(8); };
+            tabBar.Controls.AddRange(new Control[] { tabs, btnUpdate, btnMin });
+            tabBar.Resize += delegate
+            {
+                btnMin.Left = tabBar.Width - btnMin.Width - P(8);
+                btnUpdate.Left = btnMin.Left - btnUpdate.Width - P(2);
+            };
             tabBar.MouseDown += DragWindow;
 
             chipBar = new ChipBar { Dock = DockStyle.Fill, Font = fontSmall, Padding = new Padding(P(10), 0, 0, 0), Visible = false,

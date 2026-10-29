@@ -60,6 +60,7 @@ namespace FileFollow
         public static readonly Color Sel = C(214, 228, 247, 48, 76, 110);
         public static readonly Color Cut = C(180, 83, 31, 235, 145, 85);
         public static readonly Color Ok = C(46, 158, 91, 76, 194, 126);
+        public static readonly Color Notice = C(232, 17, 35, 255, 72, 72); // bright red: something new needs a look (update available)
         public static readonly Color SegBack = C(240, 242, 245, 43, 43, 43);
         public static readonly Color SegActive = C(255, 255, 255, 58, 58, 58);
         public static readonly Color PillBack = C(255, 255, 255, 43, 43, 43);

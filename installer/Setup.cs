@@ -17,7 +17,7 @@ namespace FileFollow
 {
     static class Setup
     {
-        const string Version = "1.1.0";
+        const string Version = AppInfo.Version; // src/Version.cs
         const string Publisher = "knylin";
         const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\FileFollow";
         static readonly string[] Payload = { "FileFollow.exe", "guide.zh.html", "guide.en.html", "LICENSE.txt" };
