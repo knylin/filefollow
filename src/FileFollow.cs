@@ -480,64 +480,12 @@ namespace FileFollow
         }
     }
 
-    class IconButton : Label
-    {
-        public IconButton(string glyph, Font f, int size, string tip, ToolTip tt)
-        {
-            Text = glyph; Font = f; Size = new Size(size, size); Margin = Padding.Empty;
-            TextAlign = ContentAlignment.MiddleCenter; ForeColor = Color.FromArgb(95, 95, 95);
-            BackColor = Color.White; Cursor = Cursors.Hand;
-            tt.SetToolTip(this, tip);
-        }
-        protected override void OnMouseEnter(EventArgs e) { BackColor = Color.FromArgb(236, 238, 241); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { BackColor = Color.White; base.OnMouseLeave(e); }
-    }
-
-    // Shortens long paths in the middle
-    class PathLabel : Control
-    {
-        public PathLabel()
-        {
-            SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-        }
-        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            e.Graphics.Clear(BackColor);
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
-                TextFormatFlags.PathEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-        }
-    }
-
-    // The small pill shown when collapsed
-    class Pill : Control
-    {
-        public Font IconFont;
-        public Pill()
-        {
-            SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-            Cursor = Cursors.Hand;
-        }
-        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            g.Clear(Color.White);
-            using (var pen = new Pen(Color.FromArgb(205, 208, 214))) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-            int h = Height;
-            TextRenderer.DrawText(g, "", IconFont, new Rectangle(0, 0, h, h), Color.FromArgb(43, 108, 176),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, Text, Font, new Rectangle(h - 4, 0, Width - h, h), Color.FromArgb(40, 40, 40),
-                TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-        }
-    }
-
     partial class MainForm : Form
     {
         const int WM_NCHITTEST = 0x84, WM_HOTKEY = 0x312, WM_NCLBUTTONDOWN = 0xA1, HTCAPTION = 2;
-        static readonly Color Accent = Color.FromArgb(43, 108, 176);
-        static readonly Color Muted = Color.FromArgb(120, 120, 120);
-        static readonly Color HiBack = Color.FromArgb(232, 241, 252);
+        static readonly Color Accent = Theme.Accent;
+        static readonly Color Muted = Theme.Muted;
+        static readonly Color HiBack = Theme.HiBack;
 
         readonly float s;
         readonly string settingsPath;
@@ -549,20 +497,26 @@ namespace FileFollow
         Label nameLabel, statusLabel, countLabel;
         PathLabel pathLabel;
         TextBox search;
-        ListView list;
+        BufferedListView list;
         ImageList images;
         IconButton btnPin;
-        Pill pill;
+        PillWindow pillWin;
+        TaskbarWidget tbw;
+        System.Windows.Forms.Timer tbTimer;
+        bool taskbarMode;
+        SearchField searchField;
+        SortBar sortBar;
+        Dot statusDot;
         NotifyIcon tray;
         ToolTip tips = new ToolTip();
         ContextMenuStrip itemMenu, crumbMenu;
         ToolStripMenuItem miAutoHide, miStartup;
         System.Windows.Forms.Timer pollTimer, hoverTimer, reloadTimer;
         FileSystemWatcher watcher;
-        Font fontUi, fontBold, fontName, fontSmall, fontGlyph, fontGlyphBig;
+        Font fontUi, fontBold, fontName, fontSmall, fontGlyph, fontGlyphBig, fontGlyphSmall, fontGlyphTiny;
 
         string curDir, curFile, lastKey;
-        bool pinned, collapsed, autoHide, sortByName, suppressSearch, hotkeyOk;
+        bool pinned, collapsed, autoHide, sortByName, suppressSearch, hotkeyOk, dwmFrame;
         int reqId, hoverTicks, leaveTicks, pollCount, resolving;
         Size expandedSize, minSize;
         Detected lastDetected;
@@ -581,10 +535,12 @@ namespace FileFollow
             string uiFace = HasFont("Microsoft JhengHei UI") ? "Microsoft JhengHei UI" : "Segoe UI";
             fontUi = new Font(uiFace, 9f);
             fontBold = new Font(uiFace, 9f, FontStyle.Bold);
-            fontName = new Font(uiFace, 10.5f, FontStyle.Bold);
+            fontName = new Font(uiFace, 11.25f, FontStyle.Bold);
             fontSmall = new Font(uiFace, 8.25f);
             fontGlyph = new Font(glyphFace, 10f);
             fontGlyphBig = new Font(glyphFace, 11f);
+            fontGlyphSmall = new Font(glyphFace, 9f);
+            fontGlyphTiny = new Font(glyphFace, 6.5f);
 
             Text = L.T("跟檔夾", "FileFollow");
             AutoScaleMode = AutoScaleMode.None;
@@ -592,7 +548,7 @@ namespace FileFollow
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
-            BackColor = Color.White;
+            BackColor = Theme.Back;
             Font = fontUi;
             KeyPreview = true;
             Icon = MakeIcon();
@@ -604,6 +560,7 @@ namespace FileFollow
 
             autoHide = Cfg("autohide") == "1";
             sortByName = Cfg("sort") == "name";
+            sortBar.ByName = sortByName;
             miAutoHide.Checked = autoHide;
             miStartup.Checked = File.Exists(StartupLnk());
 
@@ -622,9 +579,11 @@ namespace FileFollow
             hoverTimer.Tick += delegate { HoverTick(); };
             reloadTimer = new System.Windows.Forms.Timer { Interval = 400 };
             reloadTimer.Tick += delegate { reloadTimer.Stop(); ReadEntries(); UpdateList(false); };
+            tbTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            tbTimer.Tick += delegate { TaskbarTick(); };
 
             SetStatus(L.T("切到任何檔案，我就跳到它的資料夾", "Switch to any file and I'll jump to its folder"));
-            if (Cfg("collapsed") == "1") Shown += delegate { SetCollapsed(true); };
+            if (Cfg("collapsed") == "1" && !TestMode) Shown += delegate { SetCollapsed(true); };
         }
 
         int P(float v) { return (int)Math.Round(v * s); }
@@ -648,7 +607,15 @@ namespace FileFollow
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            try { int round = 2; Native.DwmSetWindowAttribute(Handle, 33, ref round, 4); } catch { }
+            try
+            {
+                // Windows 11 rounds the corners and draws the border itself
+                int round = 2;
+                dwmFrame = Native.DwmSetWindowAttribute(Handle, 33, ref round, 4) == 0;
+                if (dwmFrame) { int bc = ColorTranslator.ToWin32(Theme.Border); Native.DwmSetWindowAttribute(Handle, 34, ref bc, 4); }
+            }
+            catch { }
+            Theme.Window(this);
             hotkeyOk = Native.RegisterHotKey(Handle, 1, 0x1 | 0x2 | 0x4000, (uint)Keys.F); // Ctrl+Alt+F
             InitClipboard();
             if (Cfg("tab") == "1") SwitchTab(1);
@@ -656,6 +623,7 @@ namespace FileFollow
 
         protected override void OnShown(EventArgs e)
         {
+            if (!TestMode) StartTaskbar(); // before the saved collapsed state is applied
             base.OnShown(e);
             pollTimer.Start();
             hoverTimer.Start();
@@ -672,12 +640,14 @@ namespace FileFollow
         // ───────────── UI ─────────────
         void BuildUi()
         {
-            content = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Back };
 
-            // Header: folder name + path + buttons
-            var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(8), P(6), 0, P(2)), BackColor = Color.White };
+            // Header: folder tile + name + breadcrumbs + buttons
+            var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(12), P(2), P(8), P(6)), BackColor = Theme.Back };
             int bs = P(28);
-            var btns = new FlowLayoutPanel { Dock = DockStyle.Right, Width = bs * 4, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty, BackColor = Color.White };
+            var tile = new FolderTile { Dock = DockStyle.Left, Width = P(34) };
+            var tileGap = new Panel { Dock = DockStyle.Left, Width = P(10), BackColor = Theme.Back };
+            var btns = new FlowLayoutPanel { Dock = DockStyle.Right, Width = bs * 4, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty, Padding = new Padding(0, P(7), 0, 0), BackColor = Theme.Back };
             var btnUp = new IconButton("", fontGlyph, bs, L.T("上一層（Backspace）", "Up one level (Backspace)"), tips);
             btnPin = new IconButton("", fontGlyph, bs, L.T("釘選：停在這個資料夾，不再跟著跳", "Pin: stay in this folder instead of following"), tips);
             var btnOpen = new IconButton("", fontGlyph, bs, L.T("在檔案總管開啟", "Open in File Explorer"), tips);
@@ -688,42 +658,50 @@ namespace FileFollow
             btnCopy.Click += delegate { if (curDir != null) { SafeClipboard(delegate { Clipboard.SetText(curDir); }); Flash(L.T("已複製路徑", "Path copied")); } };
             btns.Controls.AddRange(new Control[] { btnUp, btnPin, btnOpen, btnCopy });
 
-            var left = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
-            pathLabel = new PathLabel { Dock = DockStyle.Bottom, Height = P(20), Font = fontSmall, ForeColor = Muted, BackColor = Color.White, Cursor = Cursors.Hand };
-            nameLabel = new Label { Dock = DockStyle.Fill, Font = fontName, ForeColor = Color.FromArgb(30, 30, 30), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false, Text = L.T("跟檔夾", "FileFollow") };
+            var left = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Back, Padding = new Padding(0, P(3), 0, P(3)) };
+            pathLabel = new PathLabel { Dock = DockStyle.Bottom, Height = P(17), Font = fontSmall, ForeColor = Muted, BackColor = Theme.Back, Cursor = Cursors.Hand };
+            nameLabel = new Label { Dock = DockStyle.Fill, Font = fontName, ForeColor = Theme.Text, TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, UseMnemonic = false, Text = L.T("跟檔夾", "FileFollow") };
             tips.SetToolTip(pathLabel, L.T("點一下：跳到上層任一資料夾", "Click to jump to any parent folder"));
             left.Controls.Add(pathLabel);
             left.Controls.Add(nameLabel);
             nameLabel.BringToFront();
-            header.Controls.Add(btns);
             header.Controls.Add(left);
+            header.Controls.Add(btns);
+            header.Controls.Add(tileGap);
+            header.Controls.Add(tile);
             left.BringToFront();
-            foreach (Control c in new Control[] { header, left, nameLabel }) c.MouseDown += DragWindow;
+            foreach (Control c in new Control[] { header, left, nameLabel, tile, tileGap }) c.MouseDown += DragWindow;
             pathLabel.MouseUp += delegate { ShowCrumbs(); };
 
-            // Filter box
-            var searchWrap = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(8), P(3), P(8), P(5)), BackColor = Color.White };
-            var searchBox = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(243, 244, 246), Padding = new Padding(P(8), P(6), P(6), 0) };
-            search = new TextBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, BackColor = searchBox.BackColor, Font = fontUi };
-            searchBox.Controls.Add(search);
-            searchWrap.Controls.Add(searchBox);
-            search.HandleCreated += delegate { Native.SendMessage(search.Handle, 0x1501, (IntPtr)1, L.T("篩選檔名…", "Filter by name…")); };
-            search.TextChanged += delegate { RefreshSearch(); };
+            // Filter field
+            var searchWrap = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(10), P(1), P(10), P(7)), BackColor = Theme.Back };
+            searchField = new SearchField(fontUi) { Dock = DockStyle.Fill, Font = fontSmall, GlyphFont = fontGlyphSmall };
+            search = searchField.Box;
+            searchWrap.Controls.Add(searchField);
+            search.HandleCreated += delegate { Native.SendMessage(search.Handle, 0x1501, (IntPtr)1, L.T("篩選檔名", "Filter by name")); };
+            search.TextChanged += delegate { searchField.Invalidate(); RefreshSearch(); };
             search.KeyDown += SearchKeyDown;
 
-            // File list
-            images = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(Native.GetSystemMetrics(49), P(24)) };
-            list = new ListView
+            // Count + sort line
+            sortBar = new SortBar { Dock = DockStyle.Fill, Font = fontSmall, GlyphFont = fontGlyphTiny, Padding = new Padding(P(14), 0, P(12), 0), Margin = Padding.Empty };
+            sortBar.Toggle += delegate { sortByName = !sortByName; sortBar.ByName = sortByName; cfg["sort"] = sortByName ? "name" : "time"; SaveSettings(); UpdateList(false); sortBar.Invalidate(); };
+            sortBar.MouseDown += (o, e) => { if (e.X < sortBar.Width / 2) DragWindow(o, e); };
+
+            // File list (owner-drawn rows)
+            images = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(Native.GetSystemMetrics(49), P(32)) };
+            list = new BufferedListView
             {
                 Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = true, HideSelection = false,
-                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.Clickable, ShowItemToolTips = true,
+                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None, ShowItemToolTips = true, OwnerDraw = true,
                 SmallImageList = images, Margin = Padding.Empty, Font = fontUi, AllowDrop = false
             };
             list.Columns.Add(L.T("名稱", "Name"), P(200));
-            list.Columns.Add(L.T("修改時間", "Modified"), P(96));
-            list.HandleCreated += delegate { Native.SetWindowTheme(list.Handle, "Explorer", null); };
+            list.Columns.Add(L.T("修改時間", "Modified"), 0);
+            Theme.Native(list);
             list.Resize += delegate { FitColumns(); };
-            list.ColumnClick += (o, e) => { sortByName = e.Column == 0; cfg["sort"] = sortByName ? "name" : "time"; SaveSettings(); UpdateList(false); };
+            // drawn at the first-column step, after the themed list has painted its selection background
+            list.DrawItem += (o, e) => DrawFileRow(e.Graphics, Rectangle.FromLTRB(0, e.Bounds.Top, e.Bounds.Right, e.Bounds.Bottom), e.Item, e.ItemIndex);
+            list.DrawSubItem += (o, e) => { if (e.ColumnIndex == 0) DrawFileRow(e.Graphics, Rectangle.FromLTRB(0, e.Bounds.Top, e.Bounds.Right, e.Bounds.Bottom), e.Item, e.ItemIndex); };
             list.ItemDrag += delegate { DragOut(); };
             list.MouseDoubleClick += (o, e) => { if (e.Button == MouseButtons.Left) OpenSelected(); };
             list.KeyDown += ListKeyDown;
@@ -731,33 +709,37 @@ namespace FileFollow
             list.ContextMenuStrip = itemMenu;
 
             // Status bar
-            var footer = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(10), 0, P(10), 0), BackColor = Color.FromArgb(250, 250, 251) };
-            countLabel = new Label { Dock = DockStyle.Right, AutoSize = true, Font = fontSmall, ForeColor = Muted, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, P(5), 0, 0) };
-            statusLabel = new Label { Dock = DockStyle.Fill, Font = fontSmall, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
+            var footer = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(P(12), P(1), P(12), 0), BackColor = Theme.Footer };
+            footer.Paint += (o, e) => { using (var pen = new Pen(Theme.Line)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0); };
+            statusDot = new Dot { Dock = DockStyle.Left, Width = P(12), BackColor = Theme.Footer };
+            countLabel = new Label { Dock = DockStyle.Right, AutoSize = true, Font = fontSmall, ForeColor = Muted, BackColor = Theme.Footer, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, P(7), 0, 0) };
+            statusLabel = new Label { Dock = DockStyle.Fill, Font = fontSmall, ForeColor = Muted, BackColor = Theme.Footer, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
             footer.Controls.Add(countLabel);
+            footer.Controls.Add(statusDot);
             footer.Controls.Add(statusLabel);
             statusLabel.BringToFront();
             footer.MouseDown += DragWindow;
             statusLabel.MouseDown += DragWindow;
+            statusDot.MouseDown += DragWindow;
 
-            content.Controls.Add(BuildLayout(header, searchWrap, list, footer));
+            content.Controls.Add(BuildLayout(header, searchWrap, sortBar, list, footer));
 
-            pill = new Pill { Dock = DockStyle.Fill, Visible = false, Font = fontBold, IconFont = fontGlyphBig, Text = L.T("跟檔夾", "FileFollow") };
-            tips.SetToolTip(pill, L.T("點一下展開（Ctrl+Alt+F）", "Click to expand (Ctrl+Alt+F)"));
-            pill.MouseDown += PillMouseDown;
-            pill.MouseMove += PillMouseMove;
-            pill.MouseUp += PillMouseUp;
+            pillWin = new PillWindow(s, new Font(fontBold.FontFamily, 13f * s, FontStyle.Bold, GraphicsUnit.Pixel));
+            tips.SetToolTip(pillWin, L.T("點一下展開（Ctrl+Alt+F）", "Click to expand (Ctrl+Alt+F)"));
+            pillWin.MouseDown += PillMouseDown;
+            pillWin.MouseMove += PillMouseMove;
+            pillWin.MouseUp += PillMouseUp;
 
-            Controls.Add(pill);
             Controls.Add(content);
-            content.BringToFront();
 
             crumbMenu = new ContextMenuStrip { Font = fontUi };
+            Theme.Menu(crumbMenu);
         }
 
         void BuildItemMenu()
         {
             itemMenu = new ContextMenuStrip { Font = fontUi };
+            Theme.Menu(itemMenu);
             itemMenu.Opening += (o, e) =>
             {
                 itemMenu.Items.Clear();
@@ -780,6 +762,7 @@ namespace FileFollow
         void BuildTray()
         {
             var menu = new ContextMenuStrip { Font = fontUi };
+            Theme.Menu(menu);
             menu.Items.Add(L.T("顯示／收起（Ctrl+Alt+F）", "Show / hide (Ctrl+Alt+F)"), null, delegate { ToggleShow(); });
             AddClipTrayItems(menu);
             miAutoHide = new ToolStripMenuItem(L.T("自動收起：滑鼠移開就收、移過去就開", "Auto-hide: collapse when the mouse leaves, expand on hover"));
@@ -788,6 +771,27 @@ namespace FileFollow
             miStartup.Click += delegate { ToggleStartup(); };
             menu.Items.Add(miAutoHide);
             menu.Items.Add(miStartup);
+            var miTheme = new ToolStripMenuItem(L.T("外觀", "Appearance"));
+            string mode = Theme.Mode();
+            foreach (string[] t in new[] {
+                new[] { "auto", L.T("跟隨 Windows", "Follow Windows") },
+                new[] { "light", L.T("淺色", "Light") },
+                new[] { "dark", L.T("深色", "Dark") } })
+            {
+                string key = t[0];
+                var mi = new ToolStripMenuItem(t[1]) { Checked = key == mode || (key == "auto" && mode != "light" && mode != "dark") };
+                mi.Click += delegate
+                {
+                    if (mi.Checked) return;
+                    cfg["theme"] = key;
+                    SaveSettings();
+                    Program.RestartRequested = true;
+                    Close();
+                };
+                miTheme.DropDownItems.Add(mi);
+            }
+            Theme.Menu(miTheme.DropDown);
+            menu.Items.Add(miTheme);
             menu.Items.Add(L.En ? "中文介面（重新啟動）" : "English (restart)", null, delegate
             {
                 cfg["lang"] = L.En ? "zh" : "en";
@@ -827,6 +831,7 @@ namespace FileFollow
         // ───────────── Foreground window tracking ─────────────
         void Poll()
         {
+            if (TaskbarOn) tbw.Sync();
             if (++pollCount % 170 == 0 && !collapsed && MouseButtons == MouseButtons.None) // refresh the 'min ago' labels about once a minute
             {
                 if (tab == 0) UpdateList(false); else clipList.Invalidate();
@@ -893,9 +898,8 @@ namespace FileFollow
             nameLabel.Text = string.IsNullOrEmpty(name) ? dir : name;
             pathLabel.Text = dir;
             tips.SetToolTip(nameLabel, dir);
-            pill.Text = nameLabel.Text;
-            tips.SetToolTip(pill, dir + L.T("\n點一下展開（Ctrl+Alt+F）", "\nClick to expand (Ctrl+Alt+F)"));
-            if (collapsed) ApplySize(PillSize());
+            tips.SetToolTip(pillWin, dir + L.T("\n點一下展開（Ctrl+Alt+F）", "\nClick to expand (Ctrl+Alt+F)"));
+            ShowPill();
             if (!sameDir)
             {
                 if (search.Text.Length > 0) { suppressSearch = true; search.Text = ""; suppressSearch = false; }
@@ -971,9 +975,6 @@ namespace FileFollow
                 it.ToolTipText = e.Name + "\n" + (fi != null ? FormatSize(fi.Length) + L.T("　", "  ") : L.T("資料夾　", "Folder  ")) + t.ToString("yyyy/M/d HH:mm");
                 if (curFile != null && string.Equals(e.FullName, curFile, StringComparison.OrdinalIgnoreCase))
                 {
-                    it.Font = fontBold;
-                    it.BackColor = HiBack;
-                    it.ForeColor = Accent;
                     current = it;
                 }
                 if (selected.Contains(e.FullName)) it.Selected = true;
@@ -989,8 +990,8 @@ namespace FileFollow
             {
                 try { list.TopItem = list.Items[top]; } catch { }
             }
-            folderCount = arr.Count + (q.Length > 0 ? L.T("／", "/") + entries.Count : "") + L.T(" 項", " items");
-            if (tab == 0) countLabel.Text = folderCount;
+            folderCount = arr.Count + (q.Length > 0 ? L.T("／", "/") + entries.Count : "") + L.T(" 個項目", " items");
+            sortBar.Count = folderCount;
             FitColumns();
         }
 
@@ -1002,9 +1003,38 @@ namespace FileFollow
         void FitColumns()
         {
             if (list.Columns.Count < 2) return;
-            int tw = P(L.En ? 118 : 96);
-            list.Columns[1].Width = tw;
-            list.Columns[0].Width = Math.Max(P(80), list.ClientSize.Width - tw - 2);
+            list.Columns[1].Width = 0;
+            list.Columns[0].Width = RowWidth(list);
+        }
+
+        // One file row: rounded highlight, system icon, name, time on the right
+        void DrawFileRow(Graphics g, Rectangle b, ListViewItem item, int index)
+        {
+            using (var bg = new SolidBrush(Theme.Back)) g.FillRectangle(bg, b);
+            if (item == null) return;
+            var e = new { Item = item };
+            bool cur = curFile != null && string.Equals((string)item.Tag, curFile, StringComparison.OrdinalIgnoreCase);
+            Color back = item.Selected ? Theme.Sel : cur ? HiBack : index == list.Hot ? Theme.Hover : Color.Empty;
+            Gfx.Fill(g, new RectangleF(b.X + P(6), b.Y + 1, b.Width - P(12), b.Height - 2), P(6), back);
+            int x = b.X + P(14);
+            if (e.Item.ImageIndex >= 0 && e.Item.ImageIndex < images.Images.Count)
+            {
+                images.Draw(g, x, b.Y + (b.Height - images.ImageSize.Height) / 2, e.Item.ImageIndex);
+                x += images.ImageSize.Width + P(10);
+            }
+            string time = e.Item.SubItems.Count > 1 ? e.Item.SubItems[1].Text : "";
+            const TextFormatFlags tf = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+            int tw = TextRenderer.MeasureText(g, time, fontSmall, Size.Empty, TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine).Width;
+            int right = b.Right - P(14);
+            TextRenderer.DrawText(g, time, fontSmall, new Rectangle(right - tw, b.Y, tw, b.Height), cur ? Accent : Muted, tf | TextFormatFlags.Right);
+            TextRenderer.DrawText(g, e.Item.Text, cur ? fontBold : fontUi, new Rectangle(x, b.Y, Math.Max(0, right - tw - P(10) - x), b.Height),
+                cur ? Accent : Theme.Text, tf | TextFormatFlags.Left);
+        }
+
+        void UpdateDot()
+        {
+            statusDot.Visible = tab == 0;
+            statusDot.DotColor = pinned ? Accent : lastDetected != null ? Theme.Ok : Theme.Border;
         }
 
         static string FormatTime(DateTime t, DateTime now)
@@ -1118,7 +1148,7 @@ namespace FileFollow
         {
             pinned = !pinned;
             btnPin.Text = pinned ? "" : "";
-            btnPin.ForeColor = pinned ? Accent : Color.FromArgb(95, 95, 95);
+            btnPin.ForeColor = pinned ? Accent : Theme.Icon;
             tips.SetToolTip(btnPin, pinned ? L.T("取消釘選：恢復跟著目前檔案跳", "Unpin: follow the current file again") : L.T("釘選：停在這個資料夾，不再跟著跳", "Pin: stay in this folder instead of following"));
             if (pinned) SetStatus(L.T("已釘選，不跟著跳", "Pinned, not following"));
             else { lastKey = null; SetStatus(lastDetected != null ? DetectedText(lastDetected) : L.T("恢復跟隨", "Following again")); }
@@ -1180,6 +1210,7 @@ namespace FileFollow
         void SetStatus(string t)
         {
             folderStatus = t;
+            UpdateDot();
             if (tab != 0) return;
             statusLabel.Text = t;
             tips.SetToolTip(statusLabel, t);
@@ -1262,7 +1293,7 @@ namespace FileFollow
             if (Math.Abs(e.X - pillDown.X) + Math.Abs(e.Y - pillDown.Y) < P(5)) return;
             pillMoved = true;
             Native.ReleaseCapture();
-            Native.SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+            Native.SendMessage(pillWin.Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
             SaveSettings();
         }
         void PillMouseUp(object o, MouseEventArgs e)
@@ -1271,12 +1302,47 @@ namespace FileFollow
             if (e.Button == MouseButtons.Right) tray.ContextMenuStrip.Show(Cursor.Position);
         }
 
-        Size PillSize()
+        // What the collapsed view shows: the folder name, or "Clipboard" while the clipboard tab is open
+        string CollapsedLabel { get { return tab == 1 ? L.T("剪貼簿", "Clipboard") : nameLabel.Text; } }
+
+        Size PillSize() { return pillWin.Measure(CollapsedLabel); }
+
+        // Shows the collapsed view: the taskbar widget when that mode is on and attached, otherwise the floating pill
+        void ShowPill()
         {
-            int tw = TextRenderer.MeasureText(pill.Text, pill.Font).Width;
-            return new Size(Math.Min(P(260), Math.Max(P(110), tw + P(48))), P(34));
+            if (TaskbarOn) { tbw.SetText(CollapsedLabel, tab == 1); pillWin.Hide(); return; }
+            if (!collapsed) return;
+            Rectangle from = pillWin.Visible ? pillWin.Visual : Bounds;
+            pillWin.ShowAt(AnchorRect(from, PillSize()), CollapsedLabel, tab == 1);
         }
 
+        bool TaskbarOn { get { return taskbarMode && tbw != null && tbw.Attached; } }
+
+        // The collapsed view lives on the taskbar; the floating pill is only a fallback while the taskbar can't be used
+        // (vertical taskbar, no room, Explorer restarting)
+        void StartTaskbar()
+        {
+            taskbarMode = true;
+            // Microsoft JhengHei (微軟正黑體), not the UI variant the panel uses
+            tbw = new TaskbarWidget(s, new Font(HasFont("Microsoft JhengHei") ? "Microsoft JhengHei" : fontUi.Name, 15f * s, FontStyle.Regular, GraphicsUnit.Pixel));
+            tbw.Clicked += ToggleShow;
+            tbw.RightClicked += delegate { tray.ContextMenuStrip.Show(Cursor.Position); };
+            tbw.Attach(CollapsedLabel);
+            tbw.SetText(CollapsedLabel, tab == 1);
+            tbTimer.Start();
+            if (collapsed) { if (TaskbarOn) pillWin.Hide(); else ShowPill(); }
+        }
+
+        // Keeps the taskbar widget attached (taskbar moved, tray resized, Explorer restarted)
+        void TaskbarTick()
+        {
+            if (!taskbarMode || tbw == null) return;
+            bool was = tbw.Attached;
+            tbw.Check();
+            if (collapsed && was != tbw.Attached) { if (TaskbarOn) pillWin.Hide(); else ShowPill(); }
+        }
+
+        // Collapsed, the panel hides and a separate layered pill window takes its place
         void SetCollapsed(bool c)
         {
             if (c == collapsed) { if (!c) Activate(); return; }
@@ -1284,50 +1350,66 @@ namespace FileFollow
             {
                 expandedSize = Size;
                 collapsed = true;
-                MinimumSize = Size.Empty;
-                content.Visible = false;
-                Padding = Padding.Empty;
-                pill.Visible = true;
-                ApplySize(PillSize());
+                ShowPill();
+                // list tooltips are separate popups and would linger after the panel hides
+                foreach (ListView lv in new ListView[] { list, clipList })
+                {
+                    IntPtr tt = Native.SendMessage(lv.Handle, 0x104E, IntPtr.Zero, IntPtr.Zero); // LVM_GETTOOLTIPS
+                    if (tt != IntPtr.Zero) Native.SendMessage(tt, 0x041C, IntPtr.Zero, IntPtr.Zero); // TTM_POP
+                }
+                Hide();
             }
             else
             {
                 collapsed = false;
-                pill.Visible = false;
-                Padding = new Padding(P(5));
-                content.Visible = true;
-                ApplySize(expandedSize);
-                MinimumSize = minSize;
+                // reopen where it was last time; only a spot that is no longer on any screen falls back to the widget
+                if (TaskbarOn) Bounds = OnScreen(new Rectangle(Location, expandedSize)) ?? AnchorRect(tbw.ScreenRect, expandedSize);
+                else if (pillWin.Visible) Bounds = AnchorRect(pillWin.Visual, expandedSize);
+                Show();
+                pillWin.Hide();
+                pillWin.Hover(false);
+                Activate();
                 UpdateList(true);
             }
             hoverTicks = leaveTicks = 0;
             SaveSettings();
         }
 
-        // When resizing, stay attached to the nearest screen edges
-        void ApplySize(Size ns)
+        // A rectangle of the new size that stays attached to the nearest screen edges
+        static Rectangle AnchorRect(Rectangle from, Size ns)
         {
-            Rectangle wa = Screen.FromRectangle(Bounds).WorkingArea;
-            bool right = Left + Width / 2 > wa.Left + wa.Width / 2;
-            bool bottom = Top + Height / 2 > wa.Top + wa.Height / 2;
-            int x = right ? Right - ns.Width : Left;
-            int y = bottom ? Bottom - ns.Height : Top;
+            Rectangle wa = Screen.FromRectangle(from).WorkingArea;
+            bool right = from.Left + from.Width / 2 > wa.Left + wa.Width / 2;
+            bool bottom = from.Top + from.Height / 2 > wa.Top + wa.Height / 2;
+            int x = right ? from.Right - ns.Width : from.Left;
+            int y = bottom ? from.Bottom - ns.Height : from.Top;
             x = Math.Max(wa.Left, Math.Min(x, wa.Right - ns.Width));
             y = Math.Max(wa.Top, Math.Min(y, wa.Bottom - ns.Height));
-            Bounds = new Rectangle(x, y, ns.Width, ns.Height);
+            return new Rectangle(x, y, ns.Width, ns.Height);
+        }
+
+        // The rectangle pulled inside its screen's working area, or null when most of it is off every screen
+        static Rectangle? OnScreen(Rectangle r)
+        {
+            Rectangle wa = Screen.FromRectangle(r).WorkingArea;
+            Rectangle hit = Rectangle.Intersect(wa, r);
+            if (hit.Width * hit.Height * 2 < r.Width * r.Height) return null;
+            int x = Math.Max(wa.Left, Math.Min(r.X, wa.Right - r.Width));
+            int y = Math.Max(wa.Top, Math.Min(r.Y, wa.Bottom - r.Height));
+            return new Rectangle(x, y, r.Width, r.Height);
         }
 
         void ToggleShow()
         {
-            if (!Visible) Show();
             if (collapsed) { SetCollapsed(false); Activate(); }
+            else if (!Visible) { Show(); Activate(); }
             else SetCollapsed(true);
         }
 
         void HoverTick()
         {
             if (!autoHide) { hoverTicks = leaveTicks = 0; return; }
-            bool inside = Bounds.Contains(Cursor.Position);
+            bool inside = (collapsed ? (TaskbarOn ? tbw.ScreenRect : pillWin.Visual) : Bounds).Contains(Cursor.Position);
             if (collapsed)
             {
                 hoverTicks = inside ? hoverTicks + 1 : 0;
@@ -1344,6 +1426,12 @@ namespace FileFollow
         {
             if (m.Msg == WM_HOTKEY) { if ((int)m.WParam == 2) OpenClipTab(); else ToggleShow(); return; }
             if (m.Msg == WM_CLIPBOARDUPDATE) OnClipboardChanged();
+            if (m.Msg == 0x1A && m.LParam != IntPtr.Zero && Marshal.PtrToStringUni(m.LParam) == "ImmersiveColorSet" && Theme.Detect() != Theme.Dark)
+            {
+                // Windows switched between light and dark: restart to repaint everything
+                Program.RestartRequested = true;
+                BeginInvoke((Action)Close);
+            }
             base.WndProc(ref m);
             if (m.Msg == WM_NCHITTEST && !collapsed && (int)m.Result == 1)
             {
@@ -1359,8 +1447,9 @@ namespace FileFollow
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            using (var pen = new Pen(Color.FromArgb(205, 208, 214)))
-                e.Graphics.DrawRectangle(pen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+            if (!dwmFrame)
+                using (var pen = new Pen(Theme.Border))
+                    e.Graphics.DrawRectangle(pen, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
         }
 
         protected override void OnResize(EventArgs e) { base.OnResize(e); Invalidate(); }
@@ -1371,6 +1460,7 @@ namespace FileFollow
             SaveSettings();
             if (hotkeyOk) Native.UnregisterHotKey(Handle, 1);
             ShutdownClipboard();
+            if (tbw != null) tbw.Detach();
             tray.Visible = false;
             tray.Dispose();
             base.OnFormClosing(e);
@@ -1416,21 +1506,58 @@ namespace FileFollow
         public static bool TestMode;
         public void TestShow(string dir, string file)
         {
+            SwitchTab(0);
             OnDetected(new Detected { Dir = dir, File = file, Proc = "WINWORD", Source = "test" });
         }
-        public void TestCollapse() { SetCollapsed(true); }
+        public Bitmap TestPill() { return pillWin.Preview(CollapsedLabel); }
+
+        public ToolStripItem[] TestMenuItems() { return tray.ContextMenuStrip.Items.Cast<ToolStripItem>().ToArray(); }
+
+        // Test hook: opens the tray menu (and its Appearance submenu) and returns the screen area they cover
+        public Rectangle TestMenu(Point at)
+        {
+            var m = tray.ContextMenuStrip;
+            m.Show(at);
+            Application.DoEvents();
+            Rectangle r = m.Bounds;
+            foreach (ToolStripItem it in m.Items)
+            {
+                var mi = it as ToolStripMenuItem;
+                if (mi != null && mi.HasDropDownItems && mi.Text == L.T("外觀", "Appearance"))
+                {
+                    mi.Select();
+                    mi.ShowDropDown();
+                    Application.DoEvents();
+                    r = Rectangle.Union(r, mi.DropDown.Bounds);
+                }
+            }
+            return r;
+        }
         public void TestClipTab() { SwitchTab(1); }
+        public Point TestClipListOrigin() { return clipList.PointToScreen(Point.Empty); }
+        public void TestHoverClip(int i)
+        {
+            if (i >= clipList.Items.Count) return;
+            Rectangle b = clipList.Items[i].Bounds;
+            Cursor.Position = clipList.PointToScreen(new Point(b.X + b.Width / 2, b.Y + b.Height / 2));
+        }
+        public void TestScrollClips() { if (clipList.Items.Count > 0) clipList.Items[clipList.Items.Count - 1].EnsureVisible(); }
+        public void TestSelectClip(int i)
+        {
+            if (i >= clipList.Items.Count) return;
+            clipList.Focus();
+            clipList.Items[i].Selected = true;
+            clipList.Items[i].Focused = true;
+        }
 
         void SaveSettings()
         {
             if (!IsHandleCreated || TestMode) return;
             Size sz = collapsed ? expandedSize : Size;
-            Rectangle wa = Screen.FromRectangle(Bounds).WorkingArea;
-            bool right = Left + Width / 2 > wa.Left + wa.Width / 2;
-            bool bottom = Top + Height / 2 > wa.Top + wa.Height / 2;
             // store the expanded position so the next start lands in the same place
-            cfg["x"] = (right ? Right - sz.Width : Left).ToString();
-            cfg["y"] = (bottom ? Bottom - sz.Height : Top).ToString();
+            Rectangle r = AnchorRect(collapsed && pillWin.Visible ? pillWin.Visual : Bounds, sz);
+            cfg["x"] = r.X.ToString();
+            cfg["y"] = r.Y.ToString();
             cfg["w"] = sz.Width.ToString();
             cfg["h"] = sz.Height.ToString();
             cfg["collapsed"] = collapsed ? "1" : "0";
@@ -1446,6 +1573,9 @@ namespace FileFollow
         static void Main(string[] args)
         {
             if (args.Length == 2 && args[0] == "--probe") { Probe(args[1]); return; }
+            if (args.Length == 2 && args[0] == "--taskbar-test") { TaskbarTest(args[1]); return; }
+            if (args.Length == 2 && args[0] == "--menu-test") { MenuTest(args[1]); return; }
+            if (args.Length == 3 && args[0] == "--list-test") { ListTest(args[1], args[2]); return; }
             if (args.Length == 4 && args[0] == "--snapshot") { Snapshot(args[1], args[2], args[3]); return; }
 
             bool created;
@@ -1458,6 +1588,113 @@ namespace FileFollow
                 Application.Run(new MainForm());
             }
             if (RestartRequested) Process.Start(Application.ExecutablePath);
+        }
+
+        // Test hook: panel on screen with a clipboard row selected, then focus moved away; screenshots both states
+        static void ListTest(string dir, string outPng)
+        {
+            Native.SetProcessDPIAware();
+            Application.EnableVisualStyles();
+            MainForm.TestMode = true;
+            var f = new MainForm();
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            f.Location = new Point(wa.Right - f.Width - 40, wa.Top + 40);
+            f.Show();
+            f.TestFeedClips(dir);
+            f.TestClipTab();
+            f.TestSelectClip(2);
+            Action<string> shot = name =>
+            {
+                for (int i = 0; i < 15; i++) { Application.DoEvents(); Thread.Sleep(30); }
+                using (var bmp = new Bitmap(f.Width, f.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(f.Location, Point.Empty, f.Size);
+                    bmp.Save(outPng.Replace(".png", "-" + name + ".png"));
+                }
+            };
+            f.Activate();
+            shot("focused");
+            var other = new Form { StartPosition = FormStartPosition.Manual, Location = new Point(wa.Left + 40, wa.Top + 40), Size = new Size(200, 120), Text = "other" };
+            other.Show();
+            other.Activate();
+            shot("unfocused");
+            other.Close();
+            f.Hide();
+            Application.DoEvents();
+            f.Show();
+            f.Activate();
+            shot("reshown");
+            f.TestScrollClips();
+            shot("scrolled");
+            Point savedCursor = Cursor.Position;
+            f.TestHoverClip(5);
+            shot("hover");
+            for (int i = 0; i < 50; i++) { Application.DoEvents(); Thread.Sleep(30); } // let the row tooltip appear
+            shot("dwell");
+            // sweep: move across rows and grab frames as fast as possible, to catch in-between repaints
+            Point top = f.TestClipListOrigin();
+            const int frames = 24, fw = 140, fh = 300;
+            using (var strip = new Bitmap(frames * (fw + 4), fh))
+            using (var sg = Graphics.FromImage(strip))
+            {
+                sg.Clear(Color.Magenta);
+                for (int i = 0; i < frames; i++)
+                {
+                    Cursor.Position = new Point(top.X + 60, top.Y + 10 + i * 11);
+                    Application.DoEvents();
+                    Thread.Sleep(8);
+                    using (var fr = new Bitmap(fw, fh))
+                    {
+                        using (var g = Graphics.FromImage(fr)) g.CopyFromScreen(top, Point.Empty, fr.Size);
+                        sg.DrawImage(fr, i * (fw + 4), 0);
+                    }
+                }
+                strip.Save(outPng.Replace(".png", "-sweep.png"));
+            }
+            Cursor.Position = savedCursor;
+            f.Close();
+        }
+
+        // Test hook: screenshots the tray menu with a submenu open
+        static void MenuTest(string outPng)
+        {
+            Native.SetProcessDPIAware();
+            Application.EnableVisualStyles();
+            MainForm.TestMode = true;
+            var f = new MainForm();
+            f.Location = new Point(-6000, -6000);
+            f.Show();
+            Application.DoEvents();
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            Rectangle r = f.TestMenu(new Point(wa.Right - 700, wa.Bottom - 520));
+            for (int i = 0; i < 15; i++) { Application.DoEvents(); Thread.Sleep(30); }
+            var sb = new StringBuilder();
+            var tm = f.TestMenuItems()[0].Owner;
+            sb.AppendLine("menu size=" + tm.Size + " client=" + tm.ClientSize + " padding=" + tm.Padding + " display=" + tm.DisplayRectangle);
+            foreach (ToolStripItem it in f.TestMenuItems())
+                sb.AppendLine(it.GetType().Name + " [" + it.Text + "] bounds=" + it.Bounds + " content=" + it.ContentRectangle + " pad=" + it.Padding);
+            File.WriteAllText(outPng + ".txt", sb.ToString(), Encoding.UTF8);
+            r.Inflate(24, 24);
+            using (var bmp = new Bitmap(r.Width, r.Height))
+            {
+                using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                bmp.Save(outPng);
+            }
+            f.Close();
+        }
+
+        // Test hook: attaches the taskbar widget for a few seconds and writes what happened
+        static void TaskbarTest(string outTxt)
+        {
+            Native.SetProcessDPIAware();
+            float sc;
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) sc = g.DpiX / 96f;
+            var w = new TaskbarWidget(sc, new Font("Microsoft JhengHei", 15f * sc, FontStyle.Regular, GraphicsUnit.Pixel));
+            bool ok = w.Attach(L.T("跟檔夾", "FileFollow"));
+            File.WriteAllText(outTxt, (ok ? "attached " : "failed ") + w.Trace, Encoding.UTF8);
+            var end = DateTime.Now.AddSeconds(6);
+            while (DateTime.Now < end) { Application.DoEvents(); Thread.Sleep(30); }
+            w.Detach();
         }
 
         // Test hook: renders the panel (expanded and collapsed) to images without touching settings
@@ -1479,10 +1716,7 @@ namespace FileFollow
             for (int i = 0; i < 10; i++) { Application.DoEvents(); Thread.Sleep(30); }
             var c = new Bitmap(f.Width, f.Height);
             f.DrawToBitmap(c, new Rectangle(Point.Empty, f.Size));
-            f.TestCollapse();
-            Application.DoEvents();
-            var b = new Bitmap(f.Width, f.Height);
-            f.DrawToBitmap(b, new Rectangle(Point.Empty, f.Size));
+            var b = f.TestPill();
             using (var all = new Bitmap(a.Width + c.Width + b.Width + 60, Math.Max(a.Height, b.Height) + 40))
             using (var g = Graphics.FromImage(all))
             {

@@ -16,7 +16,7 @@ No more clicking through Documents › Clients › Brand › 2026 › October �
 - Drag files straight out to upload or attach them (drag copies, never moves)
 - Double-click to open, Ctrl+C to copy files for pasting into chats or email
 - Click the path to jump to any parent folder; pin to stop following
-- Collapses to a small pill; optional auto-hide
+- Collapses to a small widget on the taskbar (a floating pill when the taskbar can't be used); optional auto-hide
 
 **Clipboard tab**
 - Records text (with formatting), links, email addresses, paths, colors, files (copy or cut) and images
@@ -24,7 +24,7 @@ No more clicking through Documents › Clients › Brand › 2026 › October �
 - Search, pin, merge several items, drag out
 - Skips content that password managers mark as private; history stays on your computer
 
-The interface follows your Windows display language (Traditional Chinese or English). Switch from the tray menu.
+The interface follows your Windows display language (Traditional Chinese or English; switch from the tray menu) and light or dark mode (or pick one under **Appearance** in the tray menu).
 
 ## Install
 
@@ -80,6 +80,7 @@ Tip: for VS Code, set `window.title` to `${activeEditorLong}` so the title carri
 | `src/FileFollow.cs` | Panel, folder tab, foreground-window detection |
 | `src/ClipHistory.cs` | Clipboard tab |
 | `src/I18n.cs` | Language selection |
+| `src/Theme.cs` | Light and dark colors |
 | `docs/make-shots.ps1` | Renders the screenshots |
 | `docs/build-guide.ps1` | Builds the illustrated guides |
 

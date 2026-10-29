@@ -50,33 +50,59 @@ namespace FileFollow
     class BufferedListView : ListView
     {
         public BufferedListView() { DoubleBuffered = true; }
-    }
 
-    class TabButton : Control
-    {
-        bool active, hover;
-        public bool Active { get { return active; } set { active = value; Invalidate(); } }
-        public TabButton()
+        // the owner-drawn rows show selection themselves; the native focus rectangle only leaves stray lines
+        protected override bool ShowFocusCues { get { return false; } }
+        protected override void OnHandleCreated(EventArgs e)
         {
-            SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-            Cursor = Cursors.Hand;
+            base.OnHandleCreated(e);
+            SendMessage(Handle, 0x0127, (IntPtr)(1 | (1 << 16)), IntPtr.Zero); // WM_CHANGEUISTATE: UIS_SET, UISF_HIDEFOCUS
+            SendMessage(Handle, 0x1036, (IntPtr)0x10000, (IntPtr)0x10000);      // LVM_SETEXTENDEDLISTVIEWSTYLE: LVS_EX_DOUBLEBUFFER
         }
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
-        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
-        protected override void OnPaint(PaintEventArgs e)
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+
+        // The themed list still outlines the focused row after the owner draw; clearing CDIS_FOCUS in
+        // NMCUSTOMDRAW.uItemState at item prepaint keeps it from drawing that outline
+        protected override void WndProc(ref Message m)
         {
-            e.Graphics.Clear(hover && !active ? Color.FromArgb(244, 245, 247) : Color.White);
-            Color fc = active ? Color.FromArgb(30, 30, 30) : Color.FromArgb(120, 120, 120);
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, fc,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-            if (active)
+            // owner-drawn rows cover everything; erasing first would flash the bare background on every repaint
+            if (m.Msg == 0x0014 && OwnerDraw) { m.Result = (IntPtr)1; return; } // WM_ERASEBKGND
+            if (m.Msg == 0x204E && OwnerDraw) // reflected WM_NOTIFY
             {
-                int h = Math.Max(2, Height / 14);
-                using (var b = new SolidBrush(Color.FromArgb(43, 108, 176)))
-                    e.Graphics.FillRectangle(b, Width / 5, Height - h, Width - Width * 2 / 5, h);
+                int p = IntPtr.Size;
+                if (Marshal.ReadInt32(m.LParam, 2 * p) == -12 && (Marshal.ReadInt32(m.LParam, 3 * p) & 0x10000) != 0) // NM_CUSTOMDRAW, item stage
+                {
+                    int stateOff = 4 * p + p + 16 + p; // hdr (3 pointers) + padded stage, hdc, RECT rc, dwItemSpec
+                    Marshal.WriteInt32(m.LParam, stateOff, Marshal.ReadInt32(m.LParam, stateOff) & ~0x10); // CDIS_FOCUS
+                }
+            }
+            base.WndProc(ref m);
+            // anything that can move the scroll position: let the thin scroll bar catch up
+            switch (m.Msg)
+            {
+                case 0x0115: case 0x020A: case 0x0100: case 0x0005: case 0x1013: case 0x1014: case 0x1008: case 0x1009:
+                    if (Scrolled != null) Scrolled();
+                    break;
             }
         }
+
+        public event Action Scrolled;
+
+        // Row under the mouse, for hover highlighting in owner-drawn rows
+        public int Hot = -1;
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            var it = GetItemAt(e.X, e.Y);
+            int h = it == null ? -1 : it.Index;
+            if (h != Hot) { int old = Hot; Hot = h; Redraw(old); Redraw(h); }
+        }
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            int old = Hot; Hot = -1; Redraw(old);
+        }
+        void Redraw(int i) { if (i >= 0 && i < Items.Count) Invalidate(Items[i].Bounds); }
     }
 
     partial class MainForm
@@ -95,7 +121,10 @@ namespace FileFollow
         TableLayoutPanel layout;
         Panel tabBar;
         Control folderHeader;
-        TabButton tabFolder, tabClip;
+        SegTabs tabs;
+        ChipBar chipBar;
+        Panel subRow;
+        int clipFilter;
         BufferedListView clipList;
         ContextMenuStrip clipMenu;
         ToolStripMenuItem miClipPause;
@@ -123,44 +152,51 @@ namespace FileFollow
 
         // ───────────── Layout ─────────────
         // tab bar + folder header + filter + (file list | clipboard list) + status bar
-        TableLayoutPanel BuildLayout(Control header, Control searchWrap, Control folderList, Control footer)
+        TableLayoutPanel BuildLayout(Control header, Control searchWrap, Control sortLine, Control folderList, Control footer)
         {
             folderHeader = header;
-            layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Color.White };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(34)));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(54)));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(36)));
+            layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Theme.Back };
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(42)));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(52)));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(38)));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(24)));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(26)));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, P(28)));
 
-            tabBar = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Color.White };
-            tabFolder = new TabButton { Text = L.T("資料夾", "Folder"), Font = fontBold, Bounds = new Rectangle(P(6), 0, P(68), P(33)), Active = true };
-            tabClip = new TabButton { Text = L.T("剪貼簿", "Clipboard"), Font = fontBold, Bounds = new Rectangle(P(76), 0, P(68), P(33)) };
-            tips.SetToolTip(tabClip, L.T("複製／剪下過的內容（", "Everything you copied or cut (") + ClipHotkeyText + L.T("）", ")"));
-            var btnMin = new IconButton("", fontGlyph, P(28), L.T("收起（Ctrl+Alt+F）", "Collapse (Ctrl+Alt+F)"), tips);
-            btnMin.Top = P(3);
+            tabBar = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Back };
+            tabs = new SegTabs { Font = fontUi, BoldFont = fontBold, Items = new[] { L.T("資料夾", "Folder"), L.T("剪貼簿", "Clipboard") } };
+            tabs.Size = tabs.Preferred(P(28));
+            tabs.Location = new Point(P(10), P(8));
+            tips.SetToolTip(tabs, L.T("剪貼簿：複製／剪下過的內容（", "Clipboard: everything you copied or cut (") + ClipHotkeyText + L.T("）", ")"));
+            var btnMin = new IconButton("\uE921", fontGlyph, P(28), L.T("收起（Ctrl+Alt+F）", "Collapse (Ctrl+Alt+F)"), tips);
+            btnMin.Top = P(8);
             btnMin.Click += delegate { SetCollapsed(true); };
-            tabFolder.Click += delegate { SwitchTab(0); };
-            tabClip.Click += delegate { SwitchTab(1); };
-            tabBar.Controls.AddRange(new Control[] { tabFolder, tabClip, btnMin });
-            tabBar.Resize += delegate { btnMin.Left = tabBar.Width - btnMin.Width - P(2); };
-            tabBar.Paint += (o, e) =>
-            {
-                using (var pen = new Pen(Color.FromArgb(232, 234, 238))) e.Graphics.DrawLine(pen, 0, tabBar.Height - 1, tabBar.Width, tabBar.Height - 1);
-            };
+            tabs.Picked += i => SwitchTab(i);
+            tabBar.Controls.AddRange(new Control[] { tabs, btnMin });
+            tabBar.Resize += delegate { btnMin.Left = tabBar.Width - btnMin.Width - P(8); };
             tabBar.MouseDown += DragWindow;
 
+            chipBar = new ChipBar { Dock = DockStyle.Fill, Font = fontSmall, Padding = new Padding(P(10), 0, 0, 0), Visible = false,
+                Items = new[] { L.T("全部", "All"), L.T("文字", "Text"), L.T("檔案", "Files"), L.T("圖片", "Images"), L.T("網址", "Links") } };
+            chipBar.Picked += i => { clipFilter = i; UpdateClips(); };
+            subRow = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Back };
+            subRow.Controls.Add(sortLine);
+            subRow.Controls.Add(chipBar);
+
             BuildClipList();
-            var body = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Color.White };
-            body.Controls.Add(folderList);
-            body.Controls.Add(clipList);
-            clipList.Visible = false;
+            var body = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = Theme.Back };
+            // both lists sit in hosts that swap the native scroll bar for a thin one
+            var folderHost = new ListHost((BufferedListView)folderList, P(12)) { Dock = DockStyle.Fill };
+            var clipHost = new ListHost(clipList, P(12)) { Dock = DockStyle.Fill, Visible = false };
+            body.Controls.Add(folderHost);
+            body.Controls.Add(clipHost);
 
             layout.Controls.Add(tabBar, 0, 0);
             layout.Controls.Add(header, 0, 1);
             layout.Controls.Add(searchWrap, 0, 2);
-            layout.Controls.Add(body, 0, 3);
-            layout.Controls.Add(footer, 0, 4);
+            layout.Controls.Add(subRow, 0, 3);
+            layout.Controls.Add(body, 0, 4);
+            layout.Controls.Add(footer, 0, 5);
             return layout;
         }
 
@@ -170,20 +206,23 @@ namespace FileFollow
         {
             if (clipList == null) return;
             tab = t;
-            tabFolder.Active = t == 0;
-            tabClip.Active = t == 1;
+            tabs.Selected = t;
             layout.SuspendLayout();
-            layout.RowStyles[1].Height = t == 0 ? P(54) : 0;
+            layout.RowStyles[1].Height = t == 0 ? P(52) : 0;
+            layout.RowStyles[3].Height = t == 0 ? P(24) : P(34);
+            sortBar.Visible = t == 0;
+            chipBar.Visible = t == 1;
             folderHeader.Visible = t == 0;
-            list.Visible = t == 0;
-            clipList.Visible = t == 1;
+            list.Parent.Visible = t == 0;
+            clipList.Parent.Visible = t == 1;
             layout.ResumeLayout();
             if (search.Text.Length > 0) { suppressSearch = true; search.Text = ""; suppressSearch = false; }
-            Native.SendMessage(search.Handle, 0x1501, (IntPtr)1, t == 0 ? L.T("篩選檔名…", "Filter by name…") : L.T("搜尋剪貼簿紀錄…", "Search clipboard history…"));
+            Native.SendMessage(search.Handle, 0x1501, (IntPtr)1, t == 0 ? L.T("篩選檔名", "Filter by name") : L.T("搜尋剪貼簿紀錄", "Search clipboard history"));
             if (t == 0)
             {
                 UpdateList(false);
                 statusLabel.Text = folderStatus;
+                countLabel.Text = "";
             }
             else
             {
@@ -191,6 +230,8 @@ namespace FileFollow
                 statusLabel.Text = clipPaused ? L.T("已暫停記錄（系統匣選單可恢復）", "Recording paused (resume from the tray menu)") : L.T("按兩下放回剪貼簿 · 可直接拖出去", "Double-click to copy back · drag out to use");
             }
             cfg["tab"] = t.ToString();
+            UpdateDot();
+            if (pillWin != null) ShowPill();
         }
 
         void RefreshSearch()
@@ -225,17 +266,19 @@ namespace FileFollow
                 BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None, ShowItemToolTips = true,
                 OwnerDraw = true, Margin = Padding.Empty, Font = fontUi
             };
-            clipList.SmallImageList = new ImageList { ImageSize = new Size(1, P(48)) }; // sets the row height
+            clipList.SmallImageList = new ImageList { ImageSize = new Size(1, P(52)) }; // sets the row height
             clipList.Columns.Add(L.T("內容", "Content"), P(300));
-            clipList.Resize += delegate { if (clipList.Columns.Count > 0) clipList.Columns[0].Width = clipList.ClientSize.Width; };
-            clipList.DrawItem += (o, e) => { DrawClipRow(e.Graphics, e.Bounds, (Clip)e.Item.Tag, e.Item.Selected); };
-            clipList.DrawSubItem += (o, e) => { };
-            clipList.MouseDoubleClick += (o, e) => { if (e.Button == MouseButtons.Left) UseSelectedClip(false); };
+            clipList.Resize += delegate { if (clipList.Columns.Count > 0) clipList.Columns[0].Width = RowWidth(clipList); };
+            // Rows are drawn at the first-column (sub-item) step: in Details view the themed list paints its own
+            // selection background after DrawItem but before the sub-items, so anything drawn in DrawItem gets covered
+            clipList.DrawItem += (o, e) => { DrawClipRow(e.Graphics, Rectangle.FromLTRB(0, e.Bounds.Top, e.Bounds.Right, e.Bounds.Bottom), (Clip)e.Item.Tag, e.Item.Selected, e.ItemIndex == clipList.Hot); }; // same as the final look, so no in-between flash
+            clipList.DrawSubItem += (o, e) => { if (e.ColumnIndex == 0) DrawClipRow(e.Graphics, Rectangle.FromLTRB(0, e.Bounds.Top, e.Bounds.Right, e.Bounds.Bottom), (Clip)e.Item.Tag, e.Item.Selected, e.ItemIndex == clipList.Hot); };            clipList.MouseDoubleClick += (o, e) => { if (e.Button == MouseButtons.Left) UseSelectedClip(false); };
             clipList.ItemDrag += delegate { DragClip(); };
             clipList.KeyDown += ClipKeyDown;
-            clipList.HandleCreated += delegate { Native.SetWindowTheme(clipList.Handle, "Explorer", null); };
+            Theme.Native(clipList);
 
             clipMenu = new ContextMenuStrip { Font = fontUi };
+            Theme.Menu(clipMenu);
             clipMenu.Opening += (o, e) => BuildClipMenu(e);
             clipList.ContextMenuStrip = clipMenu;
 
@@ -265,6 +308,7 @@ namespace FileFollow
                     (c.Files != null && c.Files.Any(f => Path.GetFileName(f).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)) ||
                     (c.Source != null && c.Source.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) ||
                     KindName(c).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (clipFilter > 0) items = items.Where(c => ClipGroup(c) == clipFilter);
             var arr = items.OrderByDescending(c => c.Pinned).ToList();
             var sel = new HashSet<string>(SelectedClips().Select(c => c.Id));
 
@@ -277,8 +321,27 @@ namespace FileFollow
                 clipList.Items.Add(it);
             }
             clipList.EndUpdate();
-            if (clipList.Columns.Count > 0) clipList.Columns[0].Width = clipList.ClientSize.Width;
+            if (clipList.Columns.Count > 0) clipList.Columns[0].Width = RowWidth(clipList);
             if (tab == 1) countLabel.Text = arr.Count + (q.Length > 0 ? L.T("／", "/") + clips.Count : "") + L.T(" 筆", " items");
+        }
+
+        // Rows span the visible part of the list, which is narrower than the list itself (its scroll bar is clipped)
+        static int RowWidth(ListView lv)
+        {
+            var host = lv.Parent as ListHost;
+            return host != null ? host.RowWidth : lv.ClientSize.Width;
+        }
+
+        // Filter chips: 1 text, 2 files and paths, 3 images, 4 links and email
+        static int ClipGroup(Clip c)
+        {
+            switch (c.Kind)
+            {
+                case "files": case "path": return 2;
+                case "image": return 3;
+                case "url": case "email": return 4;
+                default: return 1;
+            }
         }
 
         static string OneLine(string s, int max)
@@ -356,14 +419,15 @@ namespace FileFollow
             return body + "\n\n" + new DateTime(c.Time).ToString("yyyy/M/d HH:mm:ss") + (c.Source != null ? L.T("　", "  ") + c.Source : "");
         }
 
-        void DrawClipRow(Graphics g, Rectangle b, Clip c, bool sel)
+        void DrawClipRow(Graphics g, Rectangle b, Clip c, bool sel, bool hot)
         {
             if (c == null) return;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var bg = new SolidBrush(sel ? HiBack : Color.White)) g.FillRectangle(bg, b);
-            int icon = P(36);
-            var ir = new Rectangle(b.X + P(8), b.Y + (b.Height - icon) / 2, icon, icon);
-            var boxColor = Color.FromArgb(241, 243, 246);
+            using (var bg = new SolidBrush(Theme.Back)) g.FillRectangle(bg, b);
+            Gfx.Fill(g, new RectangleF(b.X + P(6), b.Y + 1, b.Width - P(12), b.Height - 2), P(6), sel ? Theme.Sel : hot ? Theme.Hover : Color.Empty);
+            int icon = P(34);
+            var ir = new Rectangle(b.X + P(14), b.Y + (b.Height - icon) / 2, icon, icon);
+            var boxColor = Theme.Field;
 
             if (c.Kind == "image")
             {
@@ -372,10 +436,10 @@ namespace FileFollow
                 {
                     float k = Math.Min((float)icon / th.Width, (float)icon / th.Height);
                     int w = Math.Max(1, (int)(th.Width * k)), h = Math.Max(1, (int)(th.Height * k));
-                    using (var bb = new SolidBrush(boxColor)) g.FillRectangle(bb, ir);
+                    Gfx.Fill(g, ir, P(7), boxColor);
                     g.DrawImage(th, ir.X + (icon - w) / 2, ir.Y + (icon - h) / 2, w, h);
                 }
-                else DrawGlyphBox(g, ir, "", Color.FromArgb(120, 120, 120));
+                else DrawGlyphBox(g, ir, "", Theme.Muted);
             }
             else if (c.Kind == "color")
             {
@@ -384,7 +448,7 @@ namespace FileFollow
                 {
                     var sw = Rectangle.Inflate(ir, -P(4), -P(4));
                     using (var cb = new SolidBrush(col)) g.FillEllipse(cb, sw);
-                    using (var pen = new Pen(Color.FromArgb(210, 212, 216))) g.DrawEllipse(pen, sw);
+                    using (var pen = new Pen(Theme.Ring)) g.DrawEllipse(pen, sw);
                 }
             }
             else if (c.Kind == "files" && c.Files != null && c.Files.Length == 1)
@@ -396,27 +460,26 @@ namespace FileFollow
             {
                 string glyph = c.Kind == "url" ? "" : c.Kind == "email" ? "" : c.Kind == "path" ? ""
                     : c.Kind == "files" ? "" : "";
-                DrawGlyphBox(g, ir, glyph, c.Kind == "text" ? Color.FromArgb(110, 110, 110) : Accent);
+                DrawGlyphBox(g, ir, glyph, c.Kind == "text" ? Theme.Muted : Accent);
             }
 
             int tx = ir.Right + P(10);
             int tw = b.Right - tx - P(10) - (c.Pinned ? P(18) : 0);
             int half = b.Height / 2;
             TextRenderer.DrawText(g, ClipTitle(c), c.Kind == "files" ? fontBold : fontUi, new Rectangle(tx, b.Y + P(3), tw, half - P(2)),
-                c.Kind == "url" || c.Kind == "email" ? Accent : Color.FromArgb(32, 32, 32),
+                c.Kind == "url" || c.Kind == "email" ? Accent : Theme.Text,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.Bottom | TextFormatFlags.Left);
             TextRenderer.DrawText(g, ClipMeta(c), fontSmall, new Rectangle(tx, b.Y + half + P(1), b.Right - tx - P(10), half - P(4)),
-                c.Cut ? Color.FromArgb(190, 95, 40) : Muted,
+                c.Cut ? Theme.Cut : Muted,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.Top | TextFormatFlags.Left);
             if (c.Pinned)
                 TextRenderer.DrawText(g, "", fontGlyph, new Rectangle(b.Right - P(26), b.Y + P(4), P(20), P(20)), Accent,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-            using (var pen = new Pen(Color.FromArgb(240, 241, 243))) g.DrawLine(pen, tx, b.Bottom - 1, b.Right, b.Bottom - 1);
         }
 
         void DrawGlyphBox(Graphics g, Rectangle r, string glyph, Color fc)
         {
-            using (var bb = new SolidBrush(Color.FromArgb(241, 243, 246))) g.FillRectangle(bb, r);
+            Gfx.Fill(g, r, P(7), Theme.Field);
             TextRenderer.DrawText(g, glyph, fontGlyphBig, r, fc, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
 
@@ -851,8 +914,8 @@ namespace FileFollow
             Native.GetWindowThreadProcessId(fg, out pid);
             if (pid == ownPid && tab == 1 && !collapsed && Visible) { pasteTarget = IntPtr.Zero; SetCollapsed(true); return; }
             pasteTarget = pid != ownPid ? fg : IntPtr.Zero;
-            if (!Visible) Show();
             if (collapsed) SetCollapsed(false);
+            else if (!Visible) Show();
             if (tab != 1) SwitchTab(1);
             Activate();
             clipList.Focus();
