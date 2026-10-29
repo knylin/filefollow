@@ -517,6 +517,7 @@ namespace FileFollow
 
         string curDir, curFile, lastKey;
         bool pinned, collapsed, autoHide, sortByName, suppressSearch, hotkeyOk, dwmFrame;
+        GlassBackdrop glass;
         int reqId, hoverTicks, leaveTicks, pollCount, resolving;
         Size expandedSize, minSize;
         Detected lastDetected;
@@ -624,6 +625,7 @@ namespace FileFollow
         protected override void OnShown(EventArgs e)
         {
             if (!TestMode) StartTaskbar(); // before the saved collapsed state is applied
+            if (!TestMode) SetGlass(GlassOn);
             base.OnShown(e);
             pollTimer.Start();
             hoverTimer.Start();
@@ -790,6 +792,36 @@ namespace FileFollow
                 };
                 miTheme.DropDownItems.Add(mi);
             }
+            miTheme.DropDownItems.Add(new ToolStripSeparator());
+            var miGlass = new ToolStripMenuItem(L.T("毛玻璃背景", "Frosted glass")) { Checked = GlassOn };
+            miGlass.Click += delegate
+            {
+                miGlass.Checked = !miGlass.Checked;
+                cfg["glass"] = miGlass.Checked ? "1" : "0";
+                SaveSettings();
+                SetGlass(miGlass.Checked);
+            };
+            miTheme.DropDownItems.Add(miGlass);
+            var miOpacity = new ToolStripMenuItem(L.T("透明強度", "Opacity"));
+            double cur = Math.Round(PanelOpacity, 1);
+            for (int i = 8; i >= 1; i--)
+            {
+                double v = i / 10.0;
+                string label = v.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                if (i == 4) label += L.T("（預設）", " (default)");
+                else if (i == 1) label += L.T("（最透明）", " (most transparent)");
+                var mi = new ToolStripMenuItem(label) { Checked = Math.Abs(v - cur) < 0.01 };
+                mi.Click += delegate
+                {
+                    foreach (ToolStripItem o in miOpacity.DropDownItems) { var x = o as ToolStripMenuItem; if (x != null) x.Checked = x == mi; }
+                    cfg["opacity"] = v.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                    SaveSettings();
+                    ApplyOpacity();
+                };
+                miOpacity.DropDownItems.Add(mi);
+            }
+            Theme.Menu(miOpacity.DropDown);
+            miTheme.DropDownItems.Add(miOpacity);
             Theme.Menu(miTheme.DropDown);
             menu.Items.Add(miTheme);
             menu.Items.Add(L.En ? "中文介面（重新啟動）" : "English (restart)", null, delegate
@@ -1389,6 +1421,86 @@ namespace FileFollow
             return new Rectangle(x, y, r.Width, r.Height);
         }
 
+        // Frosted glass: on unless turned off in the menu; FILEFOLLOW_GLASS=0/1 overrides for testing
+        bool GlassOn
+        {
+            get
+            {
+                string env = Environment.GetEnvironmentVariable("FILEFOLLOW_GLASS");
+                return !string.IsNullOrEmpty(env) ? env != "0" : Cfg("glass") != "0";
+            }
+        }
+
+        // Panel opacity at rest, 0.1 to 0.8 from the menu (lower shows more of what is behind)
+        double PanelOpacity
+        {
+            get
+            {
+                double v;
+                string s = Cfg("opacity");
+                if (s == null || !double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)) return 0.4;
+                return Math.Max(0.1, Math.Min(0.8, v));
+            }
+        }
+
+        const double HoverOpacity = 0.9; // while the mouse is over the panel (or one of its menus is open)
+        bool hoverLit;
+
+        // Opacity changes fade over FadeMs with an ease-in-out curve instead of jumping
+        const int FadeMs = 300;
+        System.Windows.Forms.Timer fadeTimer, lightTimer;
+        double fadeFrom, fadeTo;
+        DateTime fadeStart;
+
+        void ApplyOpacity()
+        {
+            double v = hoverLit ? HoverOpacity : PanelOpacity;
+            if (fadeTimer == null)
+            {
+                fadeTimer = new System.Windows.Forms.Timer { Interval = 15 };
+                fadeTimer.Tick += delegate { FadeStep(); };
+            }
+            if (Math.Abs(Opacity - v) < 0.001) { fadeTimer.Stop(); return; }
+            fadeFrom = Opacity;
+            fadeTo = v;
+            fadeStart = DateTime.UtcNow;
+            fadeTimer.Start();
+        }
+
+        void FadeStep()
+        {
+            double t = Math.Min(1, (DateTime.UtcNow - fadeStart).TotalMilliseconds / FadeMs);
+            double e = t * t * (3 - 2 * t); // smoothstep
+            Opacity = fadeFrom + (fadeTo - fadeFrom) * e;
+            if (t >= 1) fadeTimer.Stop();
+        }
+
+        void HoverLight()
+        {
+            bool lit = Visible && (Bounds.Contains(Cursor.Position) || itemMenu.Visible || crumbMenu.Visible || clipMenu.Visible);
+            if (lit == hoverLit) return;
+            hoverLit = lit;
+            ApplyOpacity();
+        }
+
+        void SetGlass(bool on)
+        {
+            if (on)
+            {
+                if (glass == null) glass = new GlassBackdrop(this);
+                glass.Follow();
+            }
+            else if (glass != null) { glass.Close(); glass = null; }
+            ApplyOpacity();
+            if (lightTimer == null)
+            {
+                // checks often so the fade starts as soon as the mouse crosses the edge
+                lightTimer = new System.Windows.Forms.Timer { Interval = 40 };
+                lightTimer.Tick += delegate { HoverLight(); };
+                lightTimer.Start();
+            }
+        }
+
         void ToggleShow()
         {
             if (collapsed) { SetCollapsed(false); Activate(); }
@@ -1519,6 +1631,15 @@ namespace FileFollow
                     mi.ShowDropDown();
                     Application.DoEvents();
                     r = Rectangle.Union(r, mi.DropDown.Bounds);
+                    foreach (ToolStripItem sub in mi.DropDownItems)
+                    {
+                        var si = sub as ToolStripMenuItem;
+                        if (si == null || !si.HasDropDownItems) continue;
+                        si.Select();
+                        si.ShowDropDown();
+                        Application.DoEvents();
+                        r = Rectangle.Union(r, si.DropDown.Bounds);
+                    }
                 }
             }
             return r;
