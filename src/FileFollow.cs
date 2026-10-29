@@ -692,7 +692,7 @@ namespace FileFollow
             list = new BufferedListView
             {
                 Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = true, HideSelection = false,
-                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None, ShowItemToolTips = true, OwnerDraw = true,
+                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None, OwnerDraw = true,
                 SmallImageList = images, Margin = Padding.Empty, Font = fontUi, AllowDrop = false
             };
             list.Columns.Add(L.T("名稱", "Name"), P(200));
@@ -971,8 +971,6 @@ namespace FileFollow
                 DateTime t = SafeTime(e);
                 it.SubItems.Add(FormatTime(t, now));
                 it.Tag = e.FullName;
-                var fi = e as FileInfo;
-                it.ToolTipText = e.Name + "\n" + (fi != null ? FormatSize(fi.Length) + L.T("　", "  ") : L.T("資料夾　", "Folder  ")) + t.ToString("yyyy/M/d HH:mm");
                 if (curFile != null && string.Equals(e.FullName, curFile, StringComparison.OrdinalIgnoreCase))
                 {
                     current = it;
@@ -1047,14 +1045,6 @@ namespace FileFollow
             if (t.Date == now.Date.AddDays(-1)) return L.T("昨天 ", "Yesterday ") + t.ToString("HH:mm");
             if (t.Year == now.Year) return t.ToString("M/d HH:mm");
             return t.ToString("yyyy/M/d");
-        }
-
-        static string FormatSize(long b)
-        {
-            if (b < 1024) return b + " B";
-            if (b < 1024 * 1024) return (b / 1024.0).ToString("0.#") + " KB";
-            if (b < 1024L * 1024 * 1024) return (b / 1048576.0).ToString("0.#") + " MB";
-            return (b / 1073741824.0).ToString("0.##") + " GB";
         }
 
         int IconFor(FileSystemInfo e)

@@ -263,7 +263,7 @@ namespace FileFollow
             clipList = new BufferedListView
             {
                 Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, MultiSelect = true, HideSelection = false,
-                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None, ShowItemToolTips = true,
+                BorderStyle = BorderStyle.None, HeaderStyle = ColumnHeaderStyle.None,
                 OwnerDraw = true, Margin = Padding.Empty, Font = fontUi
             };
             clipList.SmallImageList = new ImageList { ImageSize = new Size(1, P(52)) }; // sets the row height
@@ -316,7 +316,7 @@ namespace FileFollow
             clipList.Items.Clear();
             foreach (var c in arr)
             {
-                var it = new ListViewItem("") { Tag = c, ToolTipText = ClipTip(c) };
+                var it = new ListViewItem("") { Tag = c };
                 if (sel.Contains(c.Id)) it.Selected = true;
                 clipList.Items.Add(it);
             }
@@ -408,15 +408,6 @@ namespace FileFollow
             if (!string.IsNullOrEmpty(c.Source)) parts.Add(c.Source);
             parts.Add(FormatTime(new DateTime(c.Time), DateTime.Now));
             return string.Join(" · ", parts);
-        }
-
-        string ClipTip(Clip c)
-        {
-            string body;
-            if (c.Kind == "files") body = string.Join("\n", (c.Files ?? new string[0]).Take(12)) + (c.Files != null && c.Files.Length > 12 ? "\n…" : "");
-            else if (c.Kind == "image") body = L.T("圖片 ", "Image ") + c.W + "×" + c.H;
-            else body = c.Text.Length > 600 ? c.Text.Substring(0, 600) + "…" : c.Text;
-            return body + "\n\n" + new DateTime(c.Time).ToString("yyyy/M/d HH:mm:ss") + (c.Source != null ? L.T("　", "  ") + c.Source : "");
         }
 
         void DrawClipRow(Graphics g, Rectangle b, Clip c, bool sel, bool hot)
