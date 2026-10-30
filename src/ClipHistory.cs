@@ -1060,16 +1060,63 @@ namespace FileFollow
         }
 
         // ───────────── Persistence ─────────────
+        bool clipLoadFailed; // history.json exists but couldn't be read: the first save sets it aside instead of overwriting it
+
         void LoadClips()
+        {
+            if (File.Exists(clipJson))
+            {
+                List<Clip> l = ReadClips(clipJson);
+                if (l == null)
+                {
+                    clipLoadFailed = true;
+                    l = ReadClips(clipJson + ".bak"); // the copy kept by the previous save
+                }
+                if (l != null) clips = l;
+            }
+            RecoverImages();
+        }
+
+        List<Clip> ReadClips(string path)
         {
             try
             {
-                if (!File.Exists(clipJson)) return;
+                if (!File.Exists(path)) return null;
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                var l = ser.Deserialize<List<Clip>>(File.ReadAllText(clipJson, Encoding.UTF8));
-                if (l != null) clips = l.Where(c => c != null && c.Id != null && c.Kind != null).ToList();
+                var l = ser.Deserialize<List<Clip>>(File.ReadAllText(path, Encoding.UTF8));
+                return l == null ? null : l.Where(c => c != null && c.Id != null && c.Kind != null).ToList();
             }
-            catch { }
+            catch (Exception ex) { Log("read " + Path.GetFileName(path) + ": " + ex.Message); return null; }
+        }
+
+        // Images saved in the clips folder that the list doesn't mention (the list wasn't saved after they were
+        // captured, e.g. the app was ended right away) are put back, at the time they were saved
+        void RecoverImages()
+        {
+            if (TestMode) return;
+            try
+            {
+                var known = new HashSet<string>(clips.Where(c => c.Image != null).Select(c => c.Image), StringComparer.OrdinalIgnoreCase);
+                int added = 0;
+                foreach (string f in Directory.GetFiles(clipDir, "*.png"))
+                {
+                    string name = Path.GetFileName(f);
+                    if (known.Contains(name)) continue;
+                    byte[] png = File.ReadAllBytes(f);
+                    string sig = "i|" + Hash(png);
+                    if (clips.Any(c => c.Sig == sig)) continue;
+                    int w = 0, h = 0;
+                    try { using (var ms = new MemoryStream(png)) using (var img = Image.FromStream(ms, false, false)) { w = img.Width; h = img.Height; } }
+                    catch { continue; } // not a readable image
+                    clips.Add(new Clip { Id = NewId(), Kind = "image", Image = name, W = w, H = h, Time = File.GetLastWriteTime(f).Ticks, Sig = sig });
+                    added++;
+                }
+                if (added == 0) return;
+                clips = clips.OrderByDescending(c => c.Pinned).ThenByDescending(c => c.Time).ToList();
+                Log("recovered " + added + " image(s) missing from the list");
+                ScheduleClipSave();
+            }
+            catch (Exception ex) { Log("recover: " + ex.Message); }
         }
 
         void ScheduleClipSave()
@@ -1083,11 +1130,30 @@ namespace FileFollow
             if (TestMode || clipJson == null) return;
             try
             {
+                if (clipLoadFailed && File.Exists(clipJson))
+                {
+                    // never write over a history that couldn't be read; keep it for a later look
+                    File.Move(clipJson, Path.Combine(clipDir, "history-unread-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json"));
+                }
+                clipLoadFailed = false;
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 string tmp = clipJson + ".tmp";
                 File.WriteAllText(tmp, ser.Serialize(clips), new UTF8Encoding(false));
-                if (File.Exists(clipJson)) File.Replace(tmp, clipJson, null);
+                if (File.Exists(clipJson)) File.Replace(tmp, clipJson, clipJson + ".bak"); // the old list stays as .bak
                 else File.Move(tmp, clipJson);
+            }
+            catch (Exception ex) { Log("save history.json: " + ex.Message); }
+        }
+
+        // Read and write problems go to error.log next to the settings (kept small), since they are otherwise silent
+        void Log(string msg)
+        {
+            if (TestMode) return;
+            try
+            {
+                string p = Path.Combine(Path.GetDirectoryName(settingsPath), "error.log");
+                if (File.Exists(p) && new FileInfo(p).Length > 200000) File.Delete(p);
+                File.AppendAllText(p, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + AppInfo.Version + " " + msg + "\r\n", new UTF8Encoding(false));
             }
             catch { }
         }

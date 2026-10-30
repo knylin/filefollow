@@ -127,16 +127,37 @@ namespace FileFollow
         }
 
         // ───────────── Helpers ─────────────
+        // Asks a running FileFollow to close the normal way, so it saves its clipboard history and settings. Its panel
+        // is usually hidden (collapsed to the taskbar), which CloseMainWindow can't reach, so WM_CLOSE goes to its
+        // windows directly; only one that doesn't exit in time is ended by force.
         static void StopRunning()
         {
             foreach (var p in Process.GetProcessesByName("FileFollow"))
                 try
                 {
-                    p.CloseMainWindow();
-                    if (!p.WaitForExit(3000)) { p.Kill(); p.WaitForExit(3000); }
+                    uint pid = (uint)p.Id;
+                    EnumWindows((h, l) =>
+                    {
+                        uint owner;
+                        GetWindowThreadProcessId(h, out owner);
+                        if (owner == pid)
+                        {
+                            var t = new System.Text.StringBuilder(64);
+                            GetWindowText(h, t, 64);
+                            if (t.ToString() == "跟檔夾" || t.ToString() == "FileFollow") PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+                    if (!p.WaitForExit(5000)) { p.Kill(); p.WaitForExit(3000); }
                 }
                 catch { }
         }
+
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder sb, int n);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
 
         static void DeleteFile(string p) { try { if (File.Exists(p)) File.Delete(p); } catch { } }
 
